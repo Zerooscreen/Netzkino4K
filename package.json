@@ -1,0 +1,15 @@
+{
+  "name": "cinebox-de",
+  "version": "1.0.0",
+  "description": "CineBox Germany - Film- und Serieninfos (kein Streaming-Dienst)",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "dependencies": {
+    "express": "^4.19.2"
+  }
+}
