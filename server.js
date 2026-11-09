@@ -2,13 +2,12 @@ const express = require('express');
 const { tmdb, img, slugify } = require('./lib/tmdb');
 const { 
   head, layout, posterCard, genreRow, trailerBlock, castGrid, 
-  escapeHtml, movieJsonLd, tvJsonLd, sideBannerAd, nativeBannerAd, 
-  DEFAULT_TITLE, DEFAULT_DESC, SITE_NAME 
+  escapeHtml, DEFAULT_TITLE, DEFAULT_DESC 
 } = require('./lib/render');
 
 const app = express();
-const PORT = process.env.PORT || 3000;
-const SITE_URL = process.env.SITE_URL || 'https://netzkino4k.up.railway.app';
+const PORT = process.env.PORT || 8080;
+const SITE_URL = process.env.SITE_URL || 'https://netz-kino-4=k.vercel.app';
 
 app.use(express.static('public'));
 app.use(express.urlencoded({ extended: true }));
@@ -63,6 +62,48 @@ ${uniq.map(u => `  <url><loc>${u.loc}</loc><lastmod>${today}</lastmod><changefre
     res.type('application/xml').send(xml);
   } catch (e) {
     res.status(500).send('<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"></urlset>');
+  }
+});
+
+// ---------- API PROXY UNTUK FRONTEND ----------
+app.get('/api/search', async (req, res) => {
+  try {
+    const q = req.query.q || '';
+    if (!q.trim()) return res.json({ results: [] });
+    const data = await tmdb('/search/multi', { query: q });
+    const results = (data.results || [])
+      .filter(r => r.media_type === 'movie' || r.media_type === 'tv')
+      .slice(0, 8)
+      .map(r => ({
+        id: r.id,
+        media_type: r.media_type,
+        title: r.title || r.name,
+        year: (r.release_date || r.first_air_date || '').slice(0, 4),
+        poster: img(r.poster_path, 'w92'),
+        slug: slugify(r.title || r.name),
+      }));
+    res.json({ results });
+  } catch (e) {
+    res.status(500).json({ results: [], error: true });
+  }
+});
+
+app.get('/api/season/:tvId/:seasonNumber', async (req, res) => {
+  try {
+    const { tvId, seasonNumber } = req.params;
+    const data = await tmdb(`/tv/${tvId}/season/${seasonNumber}`);
+    const episodes = (data.episodes || []).map(ep => ({
+      number: ep.episode_number,
+      name: ep.name,
+      airDate: ep.air_date,
+      rating: ep.vote_average ? ep.vote_average.toFixed(1) : '-',
+      overview: ep.overview,
+      still: img(ep.still_path, 'w300'),
+      url: `/tv/${tvId}/season/${seasonNumber}/episode/${ep.episode_number}`
+    }));
+    res.json({ episodes });
+  } catch (e) {
+    res.status(500).json({ episodes: [], error: true });
   }
 });
 
@@ -260,6 +301,56 @@ app.get('/tv/:id/:slug?', async (req, res) => {
   }
 });
 
+// ---------- DETAIL EPISODE: /tv/:id/season/:season/episode/:episode ----------
+app.get('/tv/:id/season/:season/episode/:episode', async (req, res) => {
+  const { id, season, episode } = req.params;
+  try {
+    const [tvData, epData] = await Promise.all([
+      tmdb(`/tv/${id}`),
+      tmdb(`/tv/${id}/season/${season}/episode/${episode}`)
+    ]);
+
+    const tvTitle = tvData.name || 'Serie';
+    const embedUrl = `https://moviegate.bolt.host/de/tv/${id}/${season}/${episode}`;
+
+    const bodyHtml = `
+      <a class="back-btn" href="/tv/${id}/${encodeURIComponent(slugify(tvTitle))}">← Zurück zur Serie</a>
+      <div class="detail-hero">
+        <div class="hero-bg" style="background-image:url('${img(epData.still_path || tvData.backdrop_path, 'original')}')"></div>
+        <div class="hero-fade"></div>
+        <div class="detail-poster"><img src="${img(epData.still_path || tvData.poster_path)}" alt=""></div>
+        <div class="detail-info">
+          <div class="detail-eyebrow">${escapeHtml(tvTitle)} · Staffel ${season} · Episode ${episode}</div>
+          <h1 class="detail-title">${escapeHtml(epData.name || `Episode ${episode}`)}</h1>
+          <div class="detail-orig">Ausstrahlung: ${escapeHtml(epData.air_date || 'Keine Angabe')}</div>
+          <div class="detail-meta">
+            <span class="m-item star">★ ${epData.vote_average ? epData.vote_average.toFixed(1) : '-'} / 10</span>
+          </div>
+        </div>
+      </div>
+      <div class="section-block">
+        <h3>Stream Episode ${episode}</h3>
+        <div style="position:relative; width:100%; padding-bottom:56.25%; background:#000; border-radius:12px; overflow:hidden;">
+          <iframe src="${embedUrl}" style="position:absolute; top:0; left:0; width:100%; height:100%; border:0;" allowfullscreen></iframe>
+        </div>
+      </div>
+      <div class="section-block"><h3>Episodenbeschreibung</h3><div class="bio-text">${escapeHtml(epData.overview) || 'Keine Beschreibung verfügbar.'}</div></div>
+    `;
+
+    const headHtml = head({
+      title: `${tvTitle} S${season}E${episode} · Stream`,
+      description: epData.overview || DEFAULT_DESC,
+      url: `${SITE_URL}/tv/${id}/season/${season}/episode/${episode}`,
+      image: img(epData.still_path || tvData.backdrop_path, 'w780'),
+      type: 'video.episode',
+    });
+
+    res.send(layout({ headHtml, bodyHtml, activeTab: 'tv' }));
+  } catch (e) {
+    res.status(404).send('Episode nicht gefunden');
+  }
+});
+
 // ---------- COUNTDOWN / WATCH REDIRECT ----------
 app.get('/watch/:type/:id', async (req, res) => {
   const { type, id } = req.params;
@@ -299,7 +390,7 @@ app.get('/watch/:type/:id', async (req, res) => {
     `;
 
     const headHtml = head({
-      title: 'Weiterleitung zum Stream · FlixKinoHD',
+      title: 'Weiterleitung zum Stream · NetzHdKino',
       description: DEFAULT_DESC,
       url: `${SITE_URL}/watch/${type}/${id}`,
       robots: 'noindex, nofollow',
@@ -370,16 +461,16 @@ app.get('/movie', async (req, res) => {
     <h1 style="font-size:28px; margin:24px 0;">Beliebte Filme</h1>
     <div class="grid">${(data.results || []).map(item => posterCard(item, 'movie')).join('')}</div>
   `;
-  res.send(layout({ headHtml: head({ title: 'Filme · Netzkino4K', description: DEFAULT_DESC, url: `${SITE_URL}/movie` }), bodyHtml, activeTab: 'movie' }));
+  res.send(layout({ headHtml: head({ title: 'Filme · NetzHdKino', description: DEFAULT_DESC, url: `${SITE_URL}/movie` }), bodyHtml, activeTab: 'movie' }));
 });
 
 app.get('/tv', async (req, res) => {
   const data = await tmdb('/tv/popular');
   const bodyHtml = `
     <h1 style="font-size:28px; margin:24px 0;">Beliebte Serien</h1>
-    <div class="grid">${(data.results || []).map(item => posterCard(item, 'tv')).join('')}</div>
+    <div class="grid">${(data.results || []).slice(0, 12).map(item => posterCard(item, 'tv')).join('')}</div>
   `;
-  res.send(layout({ headHtml: head({ title: 'Serien · Netzkino4K', description: DEFAULT_DESC, url: `${SITE_URL}/tv` }), bodyHtml, activeTab: 'tv' }));
+  res.send(layout({ headHtml: head({ title: 'Serien · NetzHdKino', description: DEFAULT_DESC, url: `${SITE_URL}/tv` }), bodyHtml, activeTab: 'tv' }));
 });
 
 app.listen(PORT, () => {
